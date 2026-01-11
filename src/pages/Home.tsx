@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import FaceTracker from '../components/FaceTracker';
+import HandTracker from '../components/HandTracker';
 import Scene from '../components/Scene';
 import RemoteBridge from '../components/RemoteBridge';
+import SpatialAudio from '../components/SpatialAudio';
 
 type FilterType = 'standard' | 'neural' | 'combat' | 'ghost';
 
@@ -13,19 +15,38 @@ interface Landmark {
 
 interface FaceLandmarks {
   faceLandmarks: Landmark[][];
+  faceBlendshapes?: { categories: { categoryName: string; score: number }[] }[];
+}
+
+interface Hand {
+  landmarks: Landmark[];
+  worldLandmarks: Landmark[];
+  handedness: { categoryName: string; score: number }[];
+}
+
+interface HandLandmarks {
+  hands: Hand[];
 }
 
 export default function Home() {
   const [mode, setMode] = useState<'local' | 'remote'>('local');
   const [showRemoteModal, setShowRemoteModal] = useState(false);
   const [landmarks, setLandmarks] = useState<FaceLandmarks | null>(null);
+  const [handLandmarks, setHandLandmarks] = useState<HandLandmarks | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [filter, setFilter] = useState<FilterType>('standard');
-  const [module, setModule] = useState<'mesh' | 'core' | 'pulse'>('mesh');
+  const [module, setModule] = useState<'mesh' | 'core' | 'pulse' | 'glitch'>('mesh');
   const [fps, setFps] = useState(0);
+  const [showSwipeHighlight, setShowSwipeHighlight] = useState(false);
   
   const frameCount = useRef(0);
   const lastTime = useRef<number | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<string[]>(["SYSTEM_READY", "IDLE_MODE_ACTIVE"]);
+
+  // Ghosting State
+  const [ghostLandmarks, setGhostLandmarks] = useState<FaceLandmarks | null>(null);
+  const recordedGhostBuffer = useRef<FaceLandmarks[]>([]);
+  const ghostPlaybackIndex = useRef(0);
 
   // Initialize lastTime in a way that avoids impure rendering error
   useEffect(() => {
@@ -51,10 +72,35 @@ export default function Home() {
     return () => cancelAnimationFrame(animationFrameId);
   }, []);
 
-  // Reset state when switching modes is now handled via event handlers
+  // Ghost Buffer logic
+  useEffect(() => {
+    if (landmarks) {
+        recordedGhostBuffer.current.push(landmarks);
+        if (recordedGhostBuffer.current.length > 60) {
+            recordedGhostBuffer.current.shift();
+        }
+    }
+  }, [landmarks]);
+
+  // Ghost Playback loop
+  useEffect(() => {
+    const playbackTimer = setInterval(() => {
+        if (recordedGhostBuffer.current.length > 10) {
+            const index = ghostPlaybackIndex.current % recordedGhostBuffer.current.length;
+            setGhostLandmarks(recordedGhostBuffer.current[index]);
+            ghostPlaybackIndex.current++;
+        }
+    }, 50);
+    return () => clearInterval(playbackTimer);
+  }, []);
+
 
   const handleLandmarks = useCallback((results: FaceLandmarks) => {
     setLandmarks(results);
+  }, []);
+
+  const handleHandLandmarks = useCallback((results: HandLandmarks) => {
+    setHandLandmarks(results);
   }, []);
 
   const handleRemoteStream = useCallback((stream: MediaStream) => {
@@ -71,11 +117,92 @@ export default function Home() {
 
   const currentFilter = filterConfigs[filter];
 
+  // Gesture Logic: Swipe to change filter
+  const lastHandX = useRef<number | null>(null);
+  const swipeCooldown = useRef(0);
+
+  useEffect(() => {
+    if (swipeCooldown.current > 0) {
+      swipeCooldown.current--;
+      return;
+    }
+
+    if (handLandmarks?.hands?.[0]) {
+      const x = handLandmarks.hands[0].landmarks[9].x; // Middle finger MCP
+      if (lastHandX.current !== null) {
+        const delta = x - lastHandX.current;
+        if (Math.abs(delta) > 0.1) {
+           const filters: FilterType[] = ['standard', 'neural', 'combat', 'ghost'];
+           const currentIndex = filters.indexOf(filter);
+           const nextIndex = delta > 0 
+              ? (currentIndex + 1) % filters.length 
+              : (currentIndex - 1 + filters.length) % filters.length;
+           setFilter(filters[nextIndex]);
+           setShowSwipeHighlight(true);
+           setTimeout(() => setShowSwipeHighlight(false), 500);
+           swipeCooldown.current = 30; // ~1 second cooldown at 30fps
+        }
+      }
+      lastHandX.current = x;
+    }
+  }, [handLandmarks, filter]);
+
+  // Simulated AI Analysis Feed
+  useEffect(() => {
+    const analysisItems = [
+      "SCANNING_ENVIRONMENT...",
+      "OBJECT_DETECTED: UNKNOWN",
+      "CORE_PHASE_STABLE",
+      "NEURAL_LINK_ESTABLISHED",
+      "BIOMETRIC_DATA_SYNCED",
+      "NODE_STRENGTH: 98%",
+      "ENCRYPTION: AES-256",
+      "PROTOCOL_V4_ACTIVE"
+    ];
+    
+    const interval = setInterval(() => {
+      setAiAnalysis(prev => {
+        const next = analysisItems[Math.floor(Math.random() * analysisItems.length)];
+        return [...prev.slice(-4), next];
+      });
+    }, 3000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Emotion Detection Logic
+  useEffect(() => {
+    if (!landmarks?.faceBlendshapes?.[0]) return;
+    
+    const categories = landmarks.faceBlendshapes[0].categories;
+    const scores: Record<string, number> = {};
+    categories.forEach(c => scores[c.categoryName] = c.score);
+
+    // Rule 1: Anger/Brows down -> Combat
+    if (scores['browDownLeft'] > 0.5 || scores['browDownRight'] > 0.5) {
+      if (filter !== 'combat') setFilter('combat');
+    }
+    // Rule 2: Smile -> Ghost (Playful)
+    else if (scores['mouthSmileLeft'] > 0.5 || scores['mouthSmileRight'] > 0.5) {
+      if (filter !== 'ghost') setFilter('ghost');
+    }
+    // Rule 3: Jaw Open -> Neural + Glitch Module
+    else if (scores['jawOpen'] > 0.4) {
+      if (filter !== 'neural') setFilter('neural');
+      if (module !== 'glitch') setModule('glitch');
+    }
+  }, [landmarks, filter, module]);
+
   return (
     <div className={`relative w-screen h-screen text-white bg-black overflow-hidden font-mono select-none transition-colors duration-1000 ${
        filter === 'combat' ? 'bg-red-950/5' : filter === 'neural' ? 'bg-purple-950/5' : ''
     }`}>
       
+      <SpatialAudio landmarks={landmarks} handLandmarks={handLandmarks} />
+
+      {/* SWIPE HIGHLIGHT OVERLAY */}
+      <div className={`absolute inset-0 z-[100] pointer-events-none border-[10px] ${currentFilter.border} opacity-0 transition-opacity duration-500 ${showSwipeHighlight ? 'opacity-30' : ''}`} />
+
       {/* 1. BACKGROUND / VIDEO LAYER (Z-0) */}
       <div id="video-layer" className="absolute inset-0 z-0 bg-zinc-950">
          <div className={`absolute inset-0 z-10 pointer-events-none transition-all duration-1000 ${
@@ -89,11 +216,16 @@ export default function Home() {
            isActive={true} 
            onError={() => {}}
          />
+         <HandTracker 
+           onHandLandmarks={handleHandLandmarks}
+           videoSource={remoteStream}
+           isActive={true}
+         />
       </div>
 
       {/* 2. 3D SCENE LAYER (Z-10) */}
       <div id="scene-layer" className="absolute inset-0 z-10 pointer-events-none opacity-80">
-         <Scene landmarks={landmarks} module={module} />
+         <Scene landmarks={landmarks} module={module} ghostLandmarks={filter === 'ghost' ? ghostLandmarks : null} />
       </div>
 
       {/* 3. HUD LAYER (Z-20) */}
@@ -144,7 +276,7 @@ export default function Home() {
              <div className="flex flex-col items-end gap-2">
                 <span className="text-[8px] uppercase tracking-[0.5em] text-white/20 mb-1">Active Module</span>
                 <div className="flex gap-1 bg-black/40 p-1 rounded border border-white/10">
-                   {(['mesh', 'core', 'pulse'] as const).map((m) => (
+                   {(['mesh', 'core', 'pulse', 'glitch'] as const).map((m) => (
                       <button
                         key={m}
                         onClick={() => setModule(m)}
@@ -197,7 +329,10 @@ export default function Home() {
                <span className="text-xl font-black text-white tracking-widest leading-none underline decoration-2 underline-offset-4">LOGIC: <span className={currentFilter.text}>AETHER_V3</span></span>
                <div className="flex gap-4 mt-3">
                   <div className="px-2 py-0.5 border border-white/10 bg-white/5 text-[8px] text-white/50 tracking-widest uppercase">
-                     Gesture: {landmarks ? "SENSING" : "IDLE"}
+                     Face: {landmarks ? "SENSING" : "IDLE"}
+                  </div>
+                  <div className="px-2 py-0.5 border border-white/10 bg-white/5 text-[8px] text-white/50 tracking-widest uppercase">
+                     Hand: {handLandmarks?.hands?.length ? "SENSING" : "IDLE"}
                   </div>
                   <div className="px-2 py-0.5 border border-white/10 bg-white/5 text-[8px] text-white/50 tracking-widest uppercase">
                      Input: WebRTC
@@ -215,14 +350,18 @@ export default function Home() {
                </span>
                <div className="flex flex-col gap-1 mt-3 items-end">
                   <div className="flex items-center gap-2">
-                     <span className="text-[9px] text-white/30 uppercase tracking-widest leading-none">Face Detection</span>
+                     <span className="text-[9px] text-white/30 uppercase tracking-widest leading-none">Sensor Sync</span>
                      <div className="w-16 h-1 bg-white/10 overflow-hidden relative">
-                        <div className={`absolute left-0 top-0 h-full transition-all duration-500 ${landmarks ? 'w-full bg-green-500' : 'w-0'}`} />
+                        <div className={`absolute left-0 top-0 h-full transition-all duration-500 bg-green-500`} style={{ width: landmarks || (handLandmarks?.hands?.length ?? 0) > 0 ? '100%' : '10%' }} />
                      </div>
                   </div>
-                  <span className={`text-[9px] ${currentFilter.text} tracking-[0.5em] uppercase animate-pulse`}>
-                     {landmarks ? "AI Insight: Calibrated" : "Node: Searching"}
-                  </span>
+                  <div className="flex flex-col gap-0.5 mt-1">
+                     {aiAnalysis.map((item, i) => (
+                        <span key={i} className={`text-[8px] ${currentFilter.text} tracking-[0.2em] uppercase opacity-60 leading-tight`}>
+                           {item}
+                        </span>
+                     ))}
+                  </div>
                </div>
             </div>
          </div>

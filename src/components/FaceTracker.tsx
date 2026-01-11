@@ -9,6 +9,7 @@ interface Landmark {
 
 interface FaceLandmarks {
   faceLandmarks: Landmark[][];
+  faceBlendshapes?: { categories: { categoryName: string; score: number }[] }[];
 }
 
 interface FaceTrackerProps {
@@ -88,7 +89,7 @@ export default function FaceTracker({ onLandmarks, videoSource, isActive }: Face
         if (!video.paused && !video.ended && video.readyState >= 2) {
           const results = landmarker.detectForVideo(video, time);
           if (results.faceLandmarks) {
-             onLandmarks(results);
+             onLandmarks(results as unknown as FaceLandmarks);
           }
         }
       }
